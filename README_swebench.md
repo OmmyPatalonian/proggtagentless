@@ -303,6 +303,7 @@ for st in {0..36..4}; do   en=$((st + 3));
         echo "Processing ${st} to ${en}";   
         for num in $(seq $st $en); do     
             echo "Processing ${num}";     
+            # Note: For ground truth tests, use run_gt_tests.py instead
             python agentless/test/run_reproduction_tests.py --run_id="reproduction_test_generation_filter_sample_${num}" \
                                                             --test_jsonl="results/swe-bench-lite/reproduction_test_samples/output_${num}_processed_reproduction_test.jsonl" \
                                                             --num_workers 6 \
@@ -335,6 +336,8 @@ Finally, we evaluate the generated patches on the selected reproduction test. Si
 folder=results/swe-bench-lite/repair_sample_1
 for num in {0..9..1}; do
     run_id_prefix=$(basename $folder); 
+    # Note: You can use either run_reproduction_tests.py for synthetic tests
+    # or run_gt_tests.py for ground truth tests from SWE-bench
     python agentless/test/run_reproduction_tests.py --test_jsonl results/swe-bench-lite/reproduction_test_samples/reproduction_tests.jsonl \
                                                     --predictions_path="${folder}/output_${num}_processed.jsonl" \
                                                     --run_id="${run_id_prefix}_reproduction_${num}" --num_workers 10;

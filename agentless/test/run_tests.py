@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import docker
+
+from agentless.util.bench_loader import load_ground_truth_tests
 from swebench.harness.constants import (
     FAIL_TO_PASS,
     KEY_INSTANCE_ID,
@@ -628,3 +630,110 @@ def run_tests(
 
     print("All instances run.")
     return resolved_dict
+
+
+def run_ground_truth_tests(
+    instance_ids,
+    model_patches,
+    max_workers=10,
+    run_id="ground_truth",
+    instance_ids_to_run=None,
+    timeout=1200,
+    ground_truth_dir="ground_truth_tests",
+    apply_model_patch=True,
+):
+    """Run actual benchmark tests from SWE-bench instead of synthetic tests.
+    
+    This function replaces Agentless's synthetic test generation by using actual
+    F2P and P2P tests from SWE-bench benchmark. It loads the ground truth tests,
+    creates test files for them, and runs both F2P and P2P tests on the patches.
+    
+    Args:
+        instance_ids: List of instance IDs to test
+        model_patches: List of model-generated patches to apply
+        max_workers: Maximum number of worker threads for parallel testing
+        run_id: Identifier for this test run
+        instance_ids_to_run: Specific instance IDs to run (subset of instance_ids)
+        timeout: Timeout in seconds for each test
+        ground_truth_dir: Directory containing ground truth tests
+        apply_model_patch: Whether to apply the model patch or use a no-op patch
+        
+    Returns:
+        Dictionary mapping instance_id to test results (f2p_result, p2p_result, overall_result)
+    """
+    # Create F2P test file
+    f2p_jsonl = os.path.join("logs", "ground_truth", f"{run_id}_f2p.jsonl")
+    os.makedirs(os.path.dirname(f2p_jsonl), exist_ok=True)
+
+    with open(f2p_jsonl, "w") as f:
+        for instance_id in instance_ids:
+            try:
+                f2p_tests, _ = load_ground_truth_tests(instance_id, ground_truth_dir)
+                f.write(
+                    json.dumps(
+                        {
+                            "instance_id": instance_id,
+                            "tests_to_run": f2p_tests,
+                        }
+                    )
+                    + "\n"
+                )
+            except Exception as e:
+                print(f"Error loading F2P tests for {instance_id}: {e}")
+
+    # Create P2P test file
+    p2p_jsonl = os.path.join("logs", "ground_truth", f"{run_id}_p2p.jsonl")
+    with open(p2p_jsonl, "w") as f:
+        for instance_id in instance_ids:
+            try:
+                _, p2p_tests = load_ground_truth_tests(instance_id, ground_truth_dir)
+                f.write(
+                    json.dumps(
+                        {
+                            "instance_id": instance_id,
+                            "tests_passing_in_original_repo": p2p_tests,
+                        }
+                    )
+                    + "\n"
+                )
+            except Exception as e:
+                print(f"Error loading P2P tests for {instance_id}: {e}")
+
+    # Run F2P tests
+    f2p_run_id = f"{run_id}_f2p"
+    f2p_results = run_reproduction_tests(
+        instance_ids,
+        model_patches,
+        max_workers,
+        f2p_run_id,
+        instance_ids_to_run,
+        timeout,
+        testing_patches=False,
+        apply_model_patch=apply_model_patch,
+        test_jsonl=f2p_jsonl,
+    )
+
+    # Run P2P tests
+    p2p_run_id = f"{run_id}_p2p"
+    p2p_results = run_tests(
+        instance_ids,
+        model_patches,
+        max_workers,
+        p2p_run_id,
+        p2p_jsonl,
+        instance_ids_to_run,
+        timeout,
+        apply_model_patch=apply_model_patch,
+    )
+
+    # Combine results
+    combined_results = {}
+    for instance_id in instance_ids:
+        combined_results[instance_id] = {
+            "f2p_result": f2p_results.get(instance_id, False),
+            "p2p_result": p2p_results.get(instance_id, False),
+            "overall_result": f2p_results.get(instance_id, False)
+            and p2p_results.get(instance_id, False),
+        }
+
+    return combined_results

@@ -75,6 +75,60 @@ def _load_results(args):
                 )
 
 
+def _load_ground_truth_results(args):
+    """
+    Load ground truth test results for reranking.
+    
+    This function replaces the synthetic test result loading with ground truth test
+    results from SWE-bench. It loads F2P (fails in original but passes with patch)
+    and P2P (passes in original and still passes with patch) test results, allowing
+    for more accurate patch ranking.
+    """
+    global execution_results
+
+    roots = [Path(folder) for folder in args.patch_folder.split(",")]
+    intervals = [(0, int(args.num_samples / len(roots)) - 1) for _ in range(len(roots))]
+
+    interval = intervals[0]
+    for i in range(interval[0], interval[1] + 1):
+        for _, root in enumerate(roots):
+            # Load normalized patches
+            patches = load_jsonl(root / f"output_{i}_normalized.jsonl")
+            print(
+                f"Loaded {len(patches)} patches from {root / f'output_{i}_normalized.jsonl'}"
+            )
+            
+            # Load ground truth results
+            ground_truth_results_file = root / f"output_{i}_ground_truth_results.jsonl"
+            if os.path.exists(ground_truth_results_file):
+                ground_truth_results = load_jsonl(ground_truth_results_file)
+                
+                # Store results for each patch
+                for patch in patches[:]:
+                    instance_id = patch["instance_id"]
+                    
+                    # Find corresponding test results
+                    instance_results = [r for r in ground_truth_results if r["instance_id"] == instance_id]
+                    if instance_results:
+                        f2p_result = instance_results[0].get("f2p_result", False)
+                        p2p_result = instance_results[0].get("p2p_result", False)
+                        overall_result = instance_results[0].get("overall_result", False)
+                    else:
+                        f2p_result = False
+                        p2p_result = False
+                        overall_result = False
+
+                    execution_results.setdefault(instance_id, []).append(
+                        {
+                            "normalized_patch": patch["normalized_patch"].strip(),
+                            "patch": patch["model_patch"],
+                            "f2p_result": f2p_result,
+                            "p2p_result": p2p_result,
+                            "overall_result": overall_result
+                        }
+                    )
+
+
 def get_sample(instance_id, sample_id) -> tuple[str, bool]:
     """Returns the diff and pass status."""
     return execution_results[instance_id][sample_id]
@@ -289,6 +343,182 @@ def majority_voting(args):
             f.write(json.dumps(result) + "\n")
 
 
+def majority_voting_with_ground_truth(args):
+    """
+    Perform majority voting on patches based on ground truth test results.
+    
+    This function enhances the original majority voting algorithm to consider
+    ground truth test results when ranking patches. It can prioritize patches
+    that pass F2P tests, P2P tests, or both, keeping the core selection logic
+    but using more accurate test results.
+    """
+    with open(args.output_file, "w") as f:
+        for instance_id in execution_results:
+            if len(execution_results[instance_id]) < args.num_samples:
+                print(
+                    f"There were only {len(execution_results[instance_id])} patches for {instance_id} instead of the full {args.num_samples}"
+                )
+
+            patch_keys = [
+                execution_results[instance_id][i]["normalized_patch"]
+                for i in range(len(execution_results[instance_id]))
+            ]
+            
+            # Get test results
+            f2p_results = [
+                execution_results[instance_id][i]["f2p_result"]
+                for i in range(len(execution_results[instance_id]))
+            ]
+            
+            p2p_results = [
+                execution_results[instance_id][i]["p2p_result"]
+                for i in range(len(execution_results[instance_id]))
+            ]
+            
+            overall_results = [
+                execution_results[instance_id][i]["overall_result"]
+                for i in range(len(execution_results[instance_id]))
+            ]
+            
+            raw_patches = [
+                execution_results[instance_id][i]["patch"]
+                for i in range(len(execution_results[instance_id]))
+            ]
+
+            # First try patches that pass both F2P and P2P
+            if args.prioritize_overall:
+                patch_ids = [
+                    i
+                    for i in range(len(execution_results[instance_id]))
+                    if patch_keys[i].strip() and overall_results[i]
+                ]
+            elif args.prioritize_f2p:
+                # Prioritize F2P results
+                patch_ids = [
+                    i
+                    for i in range(len(execution_results[instance_id]))
+                    if patch_keys[i].strip() and f2p_results[i]
+                ]
+            elif args.prioritize_p2p:
+                # Prioritize P2P results
+                patch_ids = [
+                    i
+                    for i in range(len(execution_results[instance_id]))
+                    if patch_keys[i].strip() and p2p_results[i]
+                ]
+            else:
+                # No prioritization, use all non-empty patches
+                patch_ids = [
+                    i
+                    for i in range(len(execution_results[instance_id]))
+                    if patch_keys[i].strip()
+                ]
+
+            # If no patches meet the criteria, try a fallback
+            if not patch_ids:
+                # If we prioritized overall, try F2P only
+                if args.prioritize_overall:
+                    patch_ids = [
+                        i
+                        for i in range(len(execution_results[instance_id]))
+                        if patch_keys[i].strip() and f2p_results[i]
+                    ]
+                
+                # If still no patches, try any non-empty patch
+                if not patch_ids:
+                    patch_ids = [
+                        i
+                        for i in range(len(execution_results[instance_id]))
+                        if patch_keys[i].strip()
+                    ]
+
+            # If still no valid patches, output empty patch
+            if not patch_ids:
+                if not all([x.strip() == "" for x in raw_patches]) and not all(
+                    [x.strip() == "" for x in patch_keys]
+                ):
+                    # Use any non-empty patch
+                    vote = Counter()
+                    first_appear_idx = dict()
+                    valid_indices = []
+                    for i in range(len(execution_results[instance_id])):
+                        sample = get_sample(instance_id, i)
+                        patch_key = sample["normalized_patch"]
+                        if patch_key != "":
+                            valid_indices.append(i)
+                            vote[patch_key] += 1
+                            if patch_key not in first_appear_idx:
+                                first_appear_idx[patch_key] = i
+                    maj_selected_id = max(
+                        valid_indices,
+                        key=lambda i: (
+                            vote[patch_keys[i]],
+                            -first_appear_idx[patch_keys[i]],
+                        ),
+                    )
+                    patch = get_sample(instance_id, maj_selected_id)["patch"]
+                    result = {
+                        "model_name_or_path": "agentless",
+                        "instance_id": instance_id,
+                        "model_patch": patch,
+                    }
+                else:
+                    # Output empty patch
+                    print(f"No valid patches for {instance_id}")
+                    result = {
+                        "model_name_or_path": "agentless",
+                        "instance_id": instance_id,
+                        "model_patch": "",
+                    }
+                f.write(json.dumps(result) + "\n")
+                continue
+
+            # Perform majority voting
+            vote = Counter()
+            first_appear_idx = dict()
+            changed_length_idx = dict()
+            for i in patch_ids:
+                sample = get_sample(instance_id, i)
+                patch_key, patch = sample["normalized_patch"], sample["patch"]
+                vote[patch_key] += 1
+                if patch_key not in first_appear_idx:
+                    first_appear_idx[patch_key] = i
+                    changed_length_idx[patch_key] = modified_length(patch_key)
+
+            # Select patch based on vote count and appearance order
+            maj_selected_id = max(
+                patch_ids,
+                key=lambda i: (vote[patch_keys[i]], -first_appear_idx[patch_keys[i]]),
+            )
+
+            # Print details for debugging if target is specified
+            if args.target is not None and instance_id == args.target:
+                for patch in vote:
+                    print(
+                        "=" * 20,
+                        vote[patch],
+                        "=" * 20,
+                    )
+                    print(patch)
+                    print("=" * 50)
+
+            # Get the selected patch
+            sample = get_sample(instance_id, maj_selected_id)
+            
+            # Format the final result
+            result = {
+                "model_name_or_path": "agentless",
+                "instance_id": instance_id,
+                "model_patch": sample["patch"],
+                "f2p_result": sample["f2p_result"],
+                "p2p_result": sample["p2p_result"],
+                "overall_result": sample["overall_result"]
+            }
+
+            # Write to output file
+            f.write(json.dumps(result) + "\n")
+
+
 def normalize_patches(args):
     # separate the patch folders
     output_folders = [Path(folder) for folder in args.patch_folder.split(",")]
@@ -321,22 +551,30 @@ def normalize_patches(args):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--patch_folder", type=str)
-    parser.add_argument("--target", type=str, default=None)
-    parser.add_argument("--num_samples", type=int, default=11)
-    parser.add_argument("--deduplicate", action="store_true")
-    parser.add_argument("--regression", action="store_true")
-    parser.add_argument("--reproduction", action="store_true")
-    parser.add_argument("--output_file", type=str, default="all_preds.jsonl")
+    parser = argparse.ArgumentParser(description="Rerank patches based on test results")
+    parser.add_argument("--patch_folder", type=str, help="Folder containing patch files")
+    parser.add_argument("--target", type=str, default=None, help="Target instance ID for detailed debugging")
+    parser.add_argument("--num_samples", type=int, default=11, help="Number of samples to consider")
+    parser.add_argument("--deduplicate", action="store_true", help="Remove duplicate patches")
+    parser.add_argument("--regression", action="store_true", help="Use regression test results for ranking")
+    parser.add_argument("--reproduction", action="store_true", help="Use reproduction test results for ranking")
+    parser.add_argument("--ground_truth", action="store_true", help="Use ground truth test results for ranking")
+    parser.add_argument("--output_file", type=str, default="all_preds.jsonl", help="Output file path")
+    parser.add_argument("--prioritize_f2p", action="store_true", help="Prioritize patches passing F2P tests")
+    parser.add_argument("--prioritize_p2p", action="store_true", help="Prioritize patches passing P2P tests")
+    parser.add_argument("--prioritize_overall", action="store_true", help="Prioritize patches passing both F2P and P2P tests")
     args = parser.parse_args()
 
     # first normalize
     normalize_patches(args)
-    # then load results
-    _load_results(args)
-    # then rerank
-    majority_voting(args)
+    
+    # then load results and rerank
+    if args.ground_truth:
+        _load_ground_truth_results(args)
+        majority_voting_with_ground_truth(args)
+    else:
+        _load_results(args)
+        majority_voting(args)
 
 
 if __name__ == "__main__":

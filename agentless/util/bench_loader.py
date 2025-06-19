@@ -1,111 +1,133 @@
-"""
-Utility to load ground truth tests from SWE-bench dataset.
-"""
+# Load ground truth tests from SWE-bench dataset
+# Gets actual F2P and P2P tests from SWE-bench
+# instead of generating synthetic tests
+
 import json
 import os
-from typing import Dict, List, Tuple
+import argparse
+import logging
+from typing import Dict, List, Tuple, Any
 
 from datasets import load_dataset
 
 
-def extract_ground_truth_tests(
-    dataset_name: str = "princeton-nlp/SWE-bench_Lite",
-    target_ids: List[str] = None,
-    output_dir: str = "ground_truth_tests",
-) -> Dict[str, Tuple[List[str], List[str]]]:
-    """
-    Extract ground truth F2P and P2P tests from SWE-bench dataset.
+def get_tests(dataset="princeton-nlp/SWE-bench_Lite", 
+             ids=None, 
+             output_dir="ground_truth_tests"):
+    """Get ground truth tests from SWE-bench dataset.
     
     Args:
-        dataset_name: Name of the dataset to load
-        target_ids: List of instance IDs to extract tests for. If None, extract for all instances.
-        output_dir: Directory to save the test lists
+        dataset: Dataset name (SWE-bench_Lite or SWE-bench_Verified)
+        ids: Specific instance IDs to extract (None = all)
+        output_dir: Where to save test files
     
     Returns:
-        Dictionary mapping instance_id to (f2p_tests, p2p_tests)
+        Dict mapping instance_id to (f2p_tests, p2p_tests)
     """
-    # Load the dataset
-    ds = load_dataset(dataset_name, split="test")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        # Load the dataset
+        ds = load_dataset(dataset, split="test")
+        if logging.getLogger().level <= logging.INFO:
+            print(f"Loaded {len(ds)} instances from {dataset}")
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        raise ValueError(f"Failed to load dataset: {e}")
+        raise ValueError(f"Failed to load dataset {dataset}: {e}")
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating directory: {e}")
+        raise IOError(f"Failed to create directory: {e}")
     
     results = {}
     
-    # For each instance in the dataset
     for instance in ds:
         instance_id = instance["instance_id"]
         
-        # Skip if not in target_ids
-        if target_ids and instance_id not in target_ids:
+        if ids and instance_id not in ids:
             continue
         
-        # Extract F2P and P2P tests
-        if isinstance(instance["FAIL_TO_PASS"], str):
-            f2p_tests = json.loads(instance["FAIL_TO_PASS"])
-        else:
-            f2p_tests = instance["FAIL_TO_PASS"]
-            
-        if isinstance(instance["PASS_TO_PASS"], str):
-            p2p_tests = json.loads(instance["PASS_TO_PASS"])
-        else:
-            p2p_tests = instance["PASS_TO_PASS"]
+        # Get F2P and P2P tests
+        f2p_tests = parse_tests(instance["FAIL_TO_PASS"])
+        p2p_tests = parse_tests(instance["PASS_TO_PASS"])
         
         # Save to output files
         instance_dir = os.path.join(output_dir, instance_id)
         os.makedirs(instance_dir, exist_ok=True)
         
-        f2p_path = os.path.join(instance_dir, "f2p.txt")
-        with open(f2p_path, "w") as f:
-            for test in f2p_tests:
-                f.write(f"{test}\n")
-                
-        p2p_path = os.path.join(instance_dir, "p2p.txt")
-        with open(p2p_path, "w") as f:
-            for test in p2p_tests:
-                f.write(f"{test}\n")
+        write_tests(f2p_tests, os.path.join(instance_dir, "f2p.txt"))
+        write_tests(p2p_tests, os.path.join(instance_dir, "p2p.txt"))
         
         results[instance_id] = (f2p_tests, p2p_tests)
-    
+        
     return results
 
 
-def load_ground_truth_tests(
-    instance_id: str, 
-    test_dir: str = "ground_truth_tests"
-) -> Tuple[List[str], List[str]]:
-    """
-    Load ground truth F2P and P2P tests for a specific instance.
+def write_tests(tests, filepath):
+    """Write tests to a file, one per line"""
+    with open(filepath, "w") as f:
+        for test in tests:
+            f.write(f"{test}\n")
+
+
+def parse_tests(test_field):
+    """Parse test field - could be string (JSON) or list"""
+    if isinstance(test_field, str):
+        try:
+            return json.loads(test_field)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            raise ValueError(f"Bad JSON in test field: {e}")
+    return test_field
+
+
+def load_tests(instance_id, test_dir="ground_truth_tests"):
+    """Load ground truth tests for an instance
     
     Args:
-        instance_id: Instance ID to load tests for
-        test_dir: Directory containing the test lists
-    
+        instance_id: Instance to load tests for
+        test_dir: Directory with test files
+        
     Returns:
         Tuple of (f2p_tests, p2p_tests)
     """
     instance_dir = os.path.join(test_dir, instance_id)
     
     f2p_path = os.path.join(instance_dir, "f2p.txt")
-    with open(f2p_path, "r") as f:
-        f2p_tests = [line.strip() for line in f.readlines()]
-        
     p2p_path = os.path.join(instance_dir, "p2p.txt")
-    with open(p2p_path, "r") as f:
-        p2p_tests = [line.strip() for line in f.readlines()]
+    
+    # Make sure files exist
+    if not os.path.exists(f2p_path) or not os.path.exists(p2p_path):
+        print(f"Missing test files for {instance_id}")
+        raise FileNotFoundError(f"Missing test files for {instance_id}")
+    
+    try:
+        with open(f2p_path, "r") as f:
+            f2p_tests = [line.strip() for line in f.readlines()]
+            
+        with open(p2p_path, "r") as f:
+            p2p_tests = [line.strip() for line in f.readlines()]
+    except Exception as e:
+        print(f"Error reading test files: {e}")
+        raise IOError(f"Error reading test files: {e}")
     
     return f2p_tests, p2p_tests
 
 
+# Keep old function names for compatibility
+extract_gt_tests = get_tests
+load_gt_tests = load_tests
+load_ground_truth_tests = load_tests
+
+
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Extract ground truth tests from SWE-bench")
     parser.add_argument(
         "--dataset",
         type=str,
         default="princeton-nlp/SWE-bench_Lite",
         choices=["princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench_Verified"],
+        help="Dataset to extract tests from",
     )
     parser.add_argument(
         "--output_dir",
@@ -119,17 +141,39 @@ if __name__ == "__main__":
         type=str,
         help="Instance IDs to extract tests for (space separated)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show detailed output",
+    )
     
     args = parser.parse_args()
     
-    # Extract ground truth tests
-    results = extract_ground_truth_tests(
-        dataset_name=args.dataset,
-        target_ids=args.target_ids,
+    # Basic logging setup
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO)
+    
+    # Check empty case works
+    assert get_tests(ids=["nonexistent_id"]) == {}, "Should handle empty results"
+    
+    # Get tests
+    results = get_tests(
+        dataset=args.dataset,
+        ids=args.target_ids,
         output_dir=args.output_dir,
     )
     
     # Print summary
-    print(f"Extracted ground truth tests for {len(results)} instances")
+    print(f"Extracted tests for {len(results)} instances")
     for instance_id, (f2p, p2p) in results.items():
-        print(f"{instance_id}: {len(f2p)} F2P tests, {len(p2p)} P2P tests")
+        print(f"{instance_id}: {len(f2p)} F2P, {len(p2p)} P2P")
+    
+    # Test loading if we got results
+    if results:
+        test_id = next(iter(results.keys()))
+        try:
+            f2p, p2p = load_tests(test_id, args.output_dir)
+            print(f"Successfully loaded tests for {test_id}")
+            print(f"Sample F2P test: {f2p[0] if f2p else 'None'}")
+        except Exception as e:
+            print(f"Error loading tests: {e}")

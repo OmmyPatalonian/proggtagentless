@@ -644,6 +644,12 @@ def run_ground_truth_tests(
 ):
     """Run actual benchmark tests from SWE-bench instead of synthetic tests.
     
+    This function was added to support ground truth testing.
+    Unlike synthetic tests that are generated with LLMs, this function
+    uses actual benchmark tests from SWE-bench to validate patches,
+    providing a more accurate evaluation than the original approach of
+    generating synthetic tests.
+    
     This function replaces Agentless's synthetic test generation by using actual
     F2P and P2P tests from SWE-bench benchmark. It loads the ground truth tests,
     creates test files for them, and runs both F2P and P2P tests on the patches.

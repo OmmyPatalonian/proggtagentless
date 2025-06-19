@@ -29,6 +29,14 @@ from agentless.util.preprocess_data import (
 )
 from agentless.util.utils import cleanup_logger, load_jsonl, setup_logger
 
+# Ground truth test signaling instructions
+ground_truth_instruction = """
+IMPORTANT: Your solution will be tested with REAL tests from SWE-bench, not synthetic tests.
+
+These tests directly demonstrate the bug behavior described in the issue.
+Focus on fixing the core problem, not just making tests pass.
+"""
+
 repair_relevant_file_instruction = """
 Below are some code segments, each from a relevant file. One or more of these files may contain bugs.
 """
@@ -369,8 +377,7 @@ def process_loc(loc, args, swe_bench_data, prev_o, write_lock=None):
                         "instance_id": instance_id,
                         "raw_output": [""],
                         "try_count": [0],
-                        "all_generations": [[]],
-                        "traj": [],
+                        "all_generations": [[]],                        "traj": [],
                         "prev_content": [[]],
                         "file_names": [[]],
                     }
@@ -380,7 +387,7 @@ def process_loc(loc, args, swe_bench_data, prev_o, write_lock=None):
         if write_lock is not None:
             write_lock.release()
         return
-
+        
     prompt_template = (
         repair_prompt_combine_topn_cot_str_replace
         if args.cot and args.str_replace_format
@@ -391,9 +398,16 @@ def process_loc(loc, args, swe_bench_data, prev_o, write_lock=None):
         else repair_prompt_combine_topn
     )
     file_instruction = repair_relevant_file_instruction
+    
+    # Add ground truth instruction if enabled
+    problem_statement_with_gt = problem_statement
+    if args.use_ground_truth:
+        problem_statement_with_gt = f"{problem_statement}\n\n{ground_truth_instruction}"
+        logger.info("Using ground truth instruction in prompt")
+        
     message = prompt_template.format(
         repair_relevant_file_instruction=file_instruction,
-        problem_statement=problem_statement,
+        problem_statement=problem_statement_with_gt,
         content=topn_content.rstrip(),
     ).strip()
     logger.info(f"prompting with message:\n{message}")
@@ -769,6 +783,11 @@ def main():
     parser.add_argument("--str_replace_format", action="store_true")
     parser.add_argument("--skip_greedy", action="store_true")
     parser.add_argument("--sticky_scroll", action="store_true")
+    parser.add_argument(
+        "--use_ground_truth", 
+        action="store_true", 
+        help="Signal to the LLM that ground truth tests will be used for evaluation"
+    )
     parser.add_argument(
         "--num_threads",
         type=int,

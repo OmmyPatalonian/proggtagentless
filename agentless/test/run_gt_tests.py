@@ -1,7 +1,12 @@
 """Run ground truth tests from SWE-bench for validating patches.
 
-This script focuses solely on executing ground truth tests from SWE-bench
-rather than the synthetic reproduction tests used elsewhere in the codebase.
+This script was created to replace run_reproduction_tests.py and focuses 
+exclusively on executing ground truth tests from SWE-bench rather than 
+the synthetic reproduction tests used elsewhere in the codebase.
+
+This file maintains the same output format for compatibility with the
+reranking system while providing a cleaner interface focused solely on
+ground truth tests from SWE-bench.
 """
 import argparse
 import json

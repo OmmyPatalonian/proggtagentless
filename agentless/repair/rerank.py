@@ -558,6 +558,7 @@ def main():
     parser.add_argument("--deduplicate", action="store_true", help="Remove duplicate patches")
     parser.add_argument("--regression", action="store_true", help="Use regression test results for ranking")
     parser.add_argument("--reproduction", action="store_true", help="Use reproduction test results for ranking")
+    # Added support for ground truth testing with these parameters:
     parser.add_argument("--ground_truth", action="store_true", help="Use ground truth test results for ranking")
     parser.add_argument("--output_file", type=str, default="all_preds.jsonl", help="Output file path")
     parser.add_argument("--prioritize_f2p", action="store_true", help="Prioritize patches passing F2P tests")

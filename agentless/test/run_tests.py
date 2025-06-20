@@ -57,12 +57,6 @@ def remove_ansi_sequences(input_string):
 
 
 def txt_file_contains_string(path_to_txt, expected_output, other_patterns=[]):
-    """
-    Check if the given text file contains the specified string.
-    :param path_to_txt: Path to the text file.
-    :param expected_output: The string to search for in the text file.
-    :return: True if the string is found in the text file, otherwise False.
-    """
     try:
         with open(path_to_txt, "r", encoding="utf-8") as file:
             content = file.read()
@@ -642,31 +636,7 @@ def run_ground_truth_tests(
     ground_truth_dir="ground_truth_tests",
     apply_model_patch=True,
 ):
-    """Run actual benchmark tests from SWE-bench instead of synthetic tests.
-    
-    This function was added to support ground truth testing.
-    Unlike synthetic tests that are generated with LLMs, this function
-    uses actual benchmark tests from SWE-bench to validate patches,
-    providing a more accurate evaluation than the original approach of
-    generating synthetic tests.
-    
-    This function replaces Agentless's synthetic test generation by using actual
-    F2P and P2P tests from SWE-bench benchmark. It loads the ground truth tests,
-    creates test files for them, and runs both F2P and P2P tests on the patches.
-    
-    Args:
-        instance_ids: List of instance IDs to test
-        model_patches: List of model-generated patches to apply
-        max_workers: Maximum number of worker threads for parallel testing
-        run_id: Identifier for this test run
-        instance_ids_to_run: Specific instance IDs to run (subset of instance_ids)
-        timeout: Timeout in seconds for each test
-        ground_truth_dir: Directory containing ground truth tests
-        apply_model_patch: Whether to apply the model patch or use a no-op patch
-        
-    Returns:
-        Dictionary mapping instance_id to test results (f2p_result, p2p_result, overall_result)
-    """
+
     # Create F2P test file
     f2p_jsonl = os.path.join("logs", "ground_truth", f"{run_id}_f2p.jsonl")
     os.makedirs(os.path.dirname(f2p_jsonl), exist_ok=True)

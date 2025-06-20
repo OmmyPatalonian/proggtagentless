@@ -11,15 +11,6 @@ from datasets import load_dataset
 
 
 def extract_instance_ids_from_dataset(dataset_name="princeton-nlp/SWE-bench_Lite"):
-    """
-    Extract Django instance IDs from the SWE-bench dataset.
-    
-    Args:
-        dataset_name: Name of the dataset to load
-        
-    Returns:
-        List of Django instance IDs
-    """
     ds = load_dataset(dataset_name, split="test")
     django_instances = [
         instance["instance_id"] for instance in ds 
@@ -29,29 +20,11 @@ def extract_instance_ids_from_dataset(dataset_name="princeton-nlp/SWE-bench_Lite
 
 
 def load_test_suite(test_suite_file):
-    """
-    Load test suite from file.
-    
-    Args:
-        test_suite_file: Path to test suite file
-        
-    Returns:
-        List of tests in the suite
-    """
     with open(test_suite_file, "r") as f:
         return [line.strip() for line in f.readlines() if line.strip()]
 
 
 def extract_instance_id_from_filename(filename):
-    """
-    Extract instance ID from filename.
-    
-    Args:
-        filename: Filename to extract instance ID from
-        
-    Returns:
-        Instance ID if found, None otherwise
-    """
     match = re.search(r'django__django-(\d+)', filename)
     if match:
         return f"django__django-{match.group(1)}"
@@ -59,14 +32,6 @@ def extract_instance_id_from_filename(filename):
 
 
 def process_test_suites(test_suites_dir, output_dir, dataset_name):
-    """
-    Process test suites and create F2P and P2P files.
-    
-    Args:
-        test_suites_dir: Directory containing test suites
-        output_dir: Directory to save the processed files
-        dataset_name: Name of the dataset to load
-    """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     

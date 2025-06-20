@@ -1,13 +1,3 @@
-"""Run ground truth tests from SWE-bench for validating patches.
-
-This script was created to replace run_reproduction_tests.py and focuses 
-exclusively on executing ground truth tests from SWE-bench rather than 
-the synthetic reproduction tests used elsewhere in the codebase.
-
-This file maintains the same output format for compatibility with the
-reranking system while providing a cleaner interface focused solely on
-ground truth tests from SWE-bench.
-"""
 import argparse
 import json
 import os
@@ -94,16 +84,6 @@ def save_results(data_lines, test_results, output_path):
 
 
 def run_ground_truth_tests_main(args):
-    """
-    Run ground truth tests on patches.
-    
-    This function uses real benchmark tests from SWE-bench for validation
-    instead of synthetic tests. It loads F2P and P2P tests and evaluates
-    patches against them.
-    
-    Args:
-        args: Command-line arguments
-    """
     if args.testing:
         # For test selection - run on original repo to verify which tests are suitable
         ds = load_dataset(args.dataset)

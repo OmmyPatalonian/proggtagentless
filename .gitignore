@@ -185,3 +185,10 @@ dev/
 
 # Jupyter Notebooks
 *.ipynb
+
+# Ground truth test instances (massive repo clones)
+agentless/test/docker_eval/ground_truth_tests/
+
+# Temporary repository dumps
+tmp_repos/
+tmp_repo_*/

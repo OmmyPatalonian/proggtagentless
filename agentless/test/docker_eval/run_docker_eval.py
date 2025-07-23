@@ -14,7 +14,6 @@ HEX40_RE     = re.compile(r"\b[0-9a-f]{40}\b", re.IGNORECASE)
 
 def extract_json(stdout: str, stderr: str = ""):
     blob = stdout + "\n" + stderr
-    import re
     m = re.search(rf"{RESULT_BEGIN}\s*(\{{.*\}})\s*{RESULT_END}", blob, re.S)
     if not m:
         return None
@@ -55,15 +54,18 @@ def run_container(
     repo_url: str,
     base_commit: Optional[str],
     tests_file: pathlib.Path,
-    patch_file: pathlib.Path,
+    model_patch_file: pathlib.Path,
+    test_patch_file: Optional[pathlib.Path],
     mount_repo_out: Optional[pathlib.Path] = None,
 ) -> dict:
     cmd = [
         "docker", "run", "--rm",
         "-e", f"REPO_URL={repo_url}",
         "-v", f"{tests_file}:/workspace/ground_truth_tests.txt:ro",
-        "-v", f"{patch_file}:/workspace/patch.diff:ro",
+        "-v", f"{model_patch_file}:/workspace/patch.diff:ro",
     ]
+    if test_patch_file and test_patch_file.exists() and test_patch_file.stat().st_size > 0:
+        cmd += ["-v", f"{test_patch_file}:/workspace/test_patch.diff:ro"]
     if base_commit:
         cmd += ["-e", f"BASE_COMMIT={base_commit}"]
     if mount_repo_out:
@@ -77,8 +79,13 @@ def run_container(
 
     res = extract_json(stdout, stderr)
     if not res:
-        res = {"error": "no RESULT_JSON", "passed": 0, "total": 0,
-               "stdout": stdout[-2000:], "stderr": stderr[-2000:]}
+        res = {
+            "error": "no RESULT_JSON",
+            "passed": 0,
+            "total": 0,
+            "stdout": stdout[-2000:],
+            "stderr": stderr[-2000:],
+        }
     return res
 
 
@@ -109,13 +116,10 @@ def main():
 
     preds = load_preds(preds_path, args.limit)
 
-    results = {}
+    results: Dict[str, dict] = {}
     for idx, obj in enumerate(preds, 1):
         inst = obj["instance_id"]
         print(f"[{idx}/{len(preds)}] {inst}")
-
-        repo_root = inst.split("__", 1)[0]      # "django"
-        repo_url  = f"{repo_root}/{repo_root}"  # "django/django"
 
         inst_dir   = gt_root / inst
         tests_file = inst_dir / "tests.txt"
@@ -124,14 +128,31 @@ def main():
             results[inst] = {"error": "no-tests", "passed": 0, "total": 0}
             continue
 
-        # Write/overwrite patch
-        patch_file = inst_dir / "patch.diff"
-        patch_file.write_text(obj["model_patch"], encoding="utf-8")
+        # Repo URL
+        repo_txt = inst_dir / "repo.txt"
+        if repo_txt.exists():
+            repo_url = repo_txt.read_text(encoding="utf-8").strip()
+        else:
+            # Parse owner/repo from instance ID
+            owner, tail = inst.split("__", 1)
+            repo = tail.split("-", 1)[0]
+            repo_url = f"{owner}/{repo}"
+
+        # Write/overwrite model patch
+        model_patch_file = inst_dir / "patch.diff"
+        model_patch_file.write_text(obj["model_patch"], encoding="utf-8")
+
+        # Optional test patch (Verified or some Lite instances where present)
+        test_patch_file = inst_dir / "test_patch.diff"
 
         # Resolve base commit
-        base_commit = obj.get("base_commit") or \
-                      base_map.get(inst) or \
-                      (inst_dir / "base_commit.txt").read_text().strip() if (inst_dir / "base_commit.txt").exists() else None
+        base_commit = (
+            obj.get("base_commit")
+            or base_map.get(inst)
+            or (inst_dir / "base_commit.txt").read_text().strip()
+            if (inst_dir / "base_commit.txt").exists()
+            else None
+        )
         if not base_commit:
             base_commit = guess_commit_from_tests(tests_file)
 
@@ -144,7 +165,8 @@ def main():
             repo_url=repo_url,
             base_commit=base_commit,
             tests_file=tests_file,
-            patch_file=patch_file,
+            model_patch_file=model_patch_file,
+            test_patch_file=test_patch_file if test_patch_file.exists() else None,
             mount_repo_out=repo_out,
         )
         results[inst] = res
@@ -155,4 +177,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

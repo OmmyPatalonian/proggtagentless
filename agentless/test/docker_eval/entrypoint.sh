@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PATCH_PATH="/workspace/patch.diff"
+PATCH_PATH="/workspace/patch.diff"          # model patch
+TEST_PATCH_PATH="/workspace/test_patch.diff" # gold test patch (Verified)
 TESTS_PATH="/workspace/ground_truth_tests.txt"
 
 log(){ echo "DEBUG: $*"; }
 emit_result(){ echo "RESULT_JSON_BEGIN"; echo "$1"; echo "RESULT_JSON_END"; }
 fail_and_exit(){ local err="$1" p="$2" t="$3"; emit_result "{\"passed\":$p,\"total\":$t,\"error\":\"$err\",\"details\":{}}"; exit 0; }
 
-# Make sure we always emit *something* if a command unexpectedly fails
 PASSED=0
 GT_TOTAL=0
 trap 'fail_and_exit "unexpected_exit" "$PASSED" "$GT_TOTAL"' ERR
@@ -20,8 +20,9 @@ log "Container starting with:"
 log "REPO_URL = ${REPO_URL}"
 log "BASE_COMMIT = ${BASE_COMMIT:-<not set>}"
 log "PATCH_PATH = ${PATCH_PATH}"
+log "TEST_PATCH_PATH = ${TEST_PATCH_PATH:-<none>}"
 
-log "Content of patch file:"
+log "Content of model patch:"
 if [[ -f $PATCH_PATH ]]; then head -20 "$PATCH_PATH" || true; else log "patch.diff missing!"; fi
 log "---End of patch preview---"
 
@@ -61,30 +62,34 @@ CURRENT_COMMIT=$(git rev-parse HEAD || true)
 log "Current commit: ${CURRENT_COMMIT}"
 
 ###############################################################################
-# Apply patch
+# Apply test patch (adds/modifies gold tests) THEN model patch
 ###############################################################################
-log "Normalizing patch line endings"
-if [[ -f "$PATCH_PATH" ]]; then
-  sed -i 's/\r$//' "$PATCH_PATH" 2>/dev/null || true
+normalize_crlf(){ sed -i 's/\r$//' "$1" 2>/dev/null || true; }
+
+apply_patch_file(){
+  local file="$1"
+  git apply "$file" 2>/dev/null \
+    || git apply --ignore-whitespace "$file" 2>/dev/null \
+    || patch -p1 --fuzz=2 < "$file" 2>/dev/null \
+    || return 1
+  return 0
+}
+
+# Test patch (Verified dataset). Safe to skip if missing/empty.
+if [[ -s "$TEST_PATCH_PATH" ]]; then
+  log "Normalizing & applying test_patch.diff"
+  normalize_crlf "$TEST_PATCH_PATH"
+  apply_patch_file "$TEST_PATCH_PATH" || fail_and_exit "apply test_patch failed" 0 "$GT_TOTAL"
 fi
 
-log "Applying patch..."
-APPLY_OK=0
+# Model patch
 if [[ -f "$PATCH_PATH" ]]; then
-  if git apply "$PATCH_PATH" 2>/dev/null; then APPLY_OK=1
-  elif git apply --ignore-whitespace "$PATCH_PATH" 2>/dev/null; then APPLY_OK=1
-  elif patch -p1 --fuzz=2 < "$PATCH_PATH" 2>/dev/null; then APPLY_OK=1
-  fi
-else
-  APPLY_OK=1
+  log "Normalizing & applying model patch"
+  normalize_crlf "$PATCH_PATH"
+  apply_patch_file "$PATCH_PATH" || { git apply --check "$PATCH_PATH" || true; fail_and_exit "apply failed" 0 "$GT_TOTAL"; }
 fi
 
-if [[ $APPLY_OK -ne 1 ]]; then
-  log "Patch apply failed."
-  git apply --check "$PATCH_PATH" || true
-  fail_and_exit "apply failed" 0 "$GT_TOTAL"
-fi
-log "Files changed by patch:"; git status --short || true
+log "Files changed by patches:"; git status --short || true
 
 ###############################################################################
 # Python env / pytest / Django settings
@@ -93,7 +98,6 @@ log "Installing pytest & pytest-django"
 pip install -q --root-user-action=ignore pytest pytest-django >/dev/null
 python -m pip install -q --root-user-action=ignore -e . >/dev/null 2>&1 || true
 
-# Clean PYTHONPATH: only repo root
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 # Ensure packages exist
@@ -108,7 +112,7 @@ if [[ -d tests/migrations ]]; then
   fi
 fi
 
-# Minimal settings
+# Minimal Django settings
 RUNNER_SETTINGS="_swe_settings"
 cat > "${RUNNER_SETTINGS}.py" <<'EOF'
 SECRET_KEY = "dummy"
@@ -125,9 +129,17 @@ ROOT_URLCONF = "tests.urls"
 EOF
 export DJANGO_SETTINGS_MODULE="${RUNNER_SETTINGS}"
 
-# Pytest base args
+# Detect --ds support
+if pytest -q --help 2>&1 | grep -q -- '--ds'; then
+  DS_OPTS=(--ds="${DJANGO_SETTINGS_MODULE}")
+else
+  DS_OPTS=()
+  log "--ds not supported; relying on DJANGO_SETTINGS_MODULE env only"
+fi
+
+# Base pytest args
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-PY_ARGS_BASE=(-q -rA -p pytest_django --ds="${DJANGO_SETTINGS_MODULE}" --import-mode=importlib)
+PY_ARGS_BASE=(-q -rA -p pytest_django --import-mode=importlib "${DS_OPTS[@]}")
 
 # Fallback trivial test
 if [[ ${#GT_TESTS[@]} -eq 0 ]]; then
@@ -143,10 +155,15 @@ fi
 ###############################################################################
 log "Collecting node ids..."
 COLLECT_FILE=/tmp/collected.txt
-pytest --collect-only -p pytest_django --ds="${DJANGO_SETTINGS_MODULE}" -q > "$COLLECT_FILE" 2>&1 || true
+COLLECT_ERR=/tmp/collect.err
+pytest --collect-only -p pytest_django --import-mode=importlib "${DS_OPTS[@]}" -q >"$COLLECT_FILE" 2>"$COLLECT_ERR" || true
 LINES=$(wc -l < "$COLLECT_FILE" || echo 0)
 log "Collected $LINES lines"
 head -20 "$COLLECT_FILE" || true
+if [[ -s "$COLLECT_ERR" ]]; then
+  log "Collect stderr (tail):"
+  tail -30 "$COLLECT_ERR" || true
+fi
 
 have_node(){ grep -Fx "$1" "$COLLECT_FILE" >/dev/null 2>&1; }
 
@@ -154,13 +171,11 @@ nearest_node(){
   local spec="$1"
   local file="${spec%%::*}"
   local base="${spec%::*}"
-  # try "file::Class"
   if [[ "$base" != "$file" ]]; then
     local cand
     cand=$(grep -Fx "$base" "$COLLECT_FILE" 2>/dev/null | head -n1 || true)
     [[ -n "$cand" ]] && echo "$cand" && return 0
   fi
-  # try just "file"
   grep -Fx "$file" "$COLLECT_FILE" 2>/dev/null | head -n1 || true
   return 0
 }

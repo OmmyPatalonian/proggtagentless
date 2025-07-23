@@ -2,33 +2,37 @@
 """
 Load ground-truth tests (F2P/P2P) + base commits from SWE-bench.
 
-- Creates per-instance folder:
+Creates per-instance folder:
     f2p.txt
     p2p.txt
-    tests.txt      (F2P + P2P merged)
+    tests.txt        (F2P + P2P merged)
     base_commit.txt
-- Optionally writes a JSON map of {instance_id: base_commit} (--commit_out)
+    test_patch.diff  (ONLY if present; e.g., Verified)
+    gold_patch.diff  (solution patch; optional)
+    repo.txt
+    environment_setup_commit.txt
+
+Optionally writes a JSON map of {instance_id: base_commit} (--commit_out).
 
 Usage example:
-    python agentless/util/bench_loader.py ^
-      --dataset princeton-nlp/SWE-bench_Lite ^
-      --output_dir agentless/test/docker_eval/ground_truth_tests ^
-      --target_ids django__django-17087 django__django-14667 ^
+    python agentless/util/bench_loader.py \
+      --dataset princeton-nlp/SWE-bench_Lite \
+      --output_dir agentless/test/docker_eval/ground_truth_tests \
+      --target_ids django__django-17087 django__django-14667 \
       --commit_out commit_map.json
 """
 
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 
 from datasets import load_dataset
 
 
 def parse_tests(test_field):
-    """Parse test field - could be stringified JSON or already a list."""
+    """Parse FAIL_TO_PASS / PASS_TO_PASS which may be JSON string or list."""
     if isinstance(test_field, str):
         try:
             return json.loads(test_field)
@@ -52,6 +56,9 @@ def get_tests(
 
     Returns:
         {instance_id: (f2p_tests, p2p_tests, base_commit)}
+
+    Side effects:
+        Writes per-instance files in output_dir (see module docstring).
     """
     ds = load_dataset(dataset, split="test")
     if logging.getLogger().level <= logging.INFO:
@@ -71,6 +78,11 @@ def get_tests(
         p2p_tests = parse_tests(inst["PASS_TO_PASS"])
         base_commit = inst.get("base_commit", "")
 
+        test_patch = inst.get("test_patch", "")  # present in Verified
+        gold_patch = inst.get("patch", "")       # solution patch
+        repo_name = inst.get("repo", "")         # e.g. astropy/astropy
+        env_setup_commit = inst.get("environment_setup_commit", "")
+
         inst_dir = out_root / instance_id
         inst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +90,15 @@ def get_tests(
         write_lines(p2p_tests, inst_dir / "p2p.txt")
         write_lines(f2p_tests + p2p_tests, inst_dir / "tests.txt")
         (inst_dir / "base_commit.txt").write_text(base_commit + "\n", encoding="utf-8")
+
+        if repo_name:
+            (inst_dir / "repo.txt").write_text(repo_name + "\n", encoding="utf-8")
+        if env_setup_commit:
+            (inst_dir / "environment_setup_commit.txt").write_text(env_setup_commit + "\n", encoding="utf-8")
+        if test_patch:
+            (inst_dir / "test_patch.diff").write_text(test_patch, encoding="utf-8")
+        if gold_patch:
+            (inst_dir / "gold_patch.diff").write_text(gold_patch, encoding="utf-8")
 
         results[instance_id] = (f2p_tests, p2p_tests, base_commit)
 
@@ -91,7 +112,7 @@ def get_tests(
 
 def load_tests(instance_id: str, test_dir: str = "ground_truth_tests"):
     """
-    Load F2P/P2P (and merged/tests.txt if needed) for one instance.
+    Load F2P/P2P for one instance.
 
     Returns:
         (f2p_tests, p2p_tests)
@@ -158,3 +179,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

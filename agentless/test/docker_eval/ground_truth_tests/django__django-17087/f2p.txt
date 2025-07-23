@@ -1,1 +1,0 @@
-test_serialize_nested_class_method (migrations.test_writer.WriterTests.test_serialize_nested_class_method)

@@ -1,0 +1,1 @@
+test_defer_only_chaining (defer.tests.DeferTests)

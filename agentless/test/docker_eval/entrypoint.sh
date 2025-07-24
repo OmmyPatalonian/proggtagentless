@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PATCH_PATH="/workspace/patch.diff"          # model patch
-TEST_PATCH_PATH="/workspace/test_patch.diff" # gold test patch (Verified)
+PATCH_PATH="/workspace/patch.diff"
+TEST_PATCH_PATH="/workspace/test_patch.diff"
 TESTS_PATH="/workspace/ground_truth_tests.txt"
 
 log(){ echo "DEBUG: $*"; }
-emit_result(){ echo "RESULT_JSON_BEGIN"; echo "$1"; echo "RESULT_JSON_END"; }
-fail_and_exit(){ local err="$1" p="$2" t="$3"; emit_result "{\"passed\":$p,\"total\":$t,\"error\":\"$err\",\"details\":{}}"; exit 0; }
+emit_json(){ echo "RESULT_JSON_BEGIN"; echo "$1"; echo "RESULT_JSON_END"; }
+fail_and_exit(){ local msg="$1" p="$2" t="$3"; emit_json "{\"passed\":$p,\"total\":$t,\"error\":\"$msg\",\"details\":{}}"; exit 0; }
 
 PASSED=0
 GT_TOTAL=0
 trap 'fail_and_exit "unexpected_exit" "$PASSED" "$GT_TOTAL"' ERR
 
-###############################################################################
-# Inputs / preview
-###############################################################################
 log "Container starting with:"
 log "REPO_URL = ${REPO_URL}"
 log "BASE_COMMIT = ${BASE_COMMIT:-<not set>}"
@@ -26,9 +23,6 @@ log "Content of model patch:"
 if [[ -f $PATCH_PATH ]]; then head -20 "$PATCH_PATH" || true; else log "patch.diff missing!"; fi
 log "---End of patch preview---"
 
-###############################################################################
-# Load tests
-###############################################################################
 if [[ -f "$TESTS_PATH" ]]; then
   log "Reading test specs from ground_truth_tests.txt"
   mapfile -t RAW_TESTS < "$TESTS_PATH"
@@ -46,9 +40,6 @@ done
 GT_TOTAL=${#GT_TESTS[@]}
 log "Using ${GT_TOTAL} specs: ${GT_TESTS[*]:-<none>}"
 
-###############################################################################
-# Clone & checkout
-###############################################################################
 CLONE_URL="https://github.com/${REPO_URL}.git"
 echo "Cloning repository ${CLONE_URL}..."
 git clone "$CLONE_URL" repo || fail_and_exit "clone failed" 0 "$GT_TOTAL"
@@ -61,11 +52,7 @@ fi
 CURRENT_COMMIT=$(git rev-parse HEAD || true)
 log "Current commit: ${CURRENT_COMMIT}"
 
-###############################################################################
-# Apply test patch (adds/modifies gold tests) THEN model patch
-###############################################################################
 normalize_crlf(){ sed -i 's/\r$//' "$1" 2>/dev/null || true; }
-
 apply_patch_file(){
   local file="$1"
   git apply "$file" 2>/dev/null \
@@ -75,14 +62,12 @@ apply_patch_file(){
   return 0
 }
 
-# Test patch (Verified dataset). Safe to skip if missing/empty.
 if [[ -s "$TEST_PATCH_PATH" ]]; then
   log "Normalizing & applying test_patch.diff"
   normalize_crlf "$TEST_PATCH_PATH"
   apply_patch_file "$TEST_PATCH_PATH" || fail_and_exit "apply test_patch failed" 0 "$GT_TOTAL"
 fi
 
-# Model patch
 if [[ -f "$PATCH_PATH" ]]; then
   log "Normalizing & applying model patch"
   normalize_crlf "$PATCH_PATH"
@@ -91,28 +76,27 @@ fi
 
 log "Files changed by patches:"; git status --short || true
 
-###############################################################################
-# Python env / pytest / Django settings
-###############################################################################
 log "Installing pytest & pytest-django"
 pip install -q --root-user-action=ignore pytest pytest-django >/dev/null
 python -m pip install -q --root-user-action=ignore -e . >/dev/null 2>&1 || true
 
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+export PYTHONPATH="$PWD:$PWD/tests:$PWD/tests/migrations:${PYTHONPATH:-}"
 
-# Ensure packages exist
+if [ -d tests/migrations/custom_migration_operations ]; then
+  SRC="tests/migrations/custom_migration_operations"
+  DST="custom_migration_operations"
+  [ -f "$SRC/__init__.py" ] || touch "$SRC/__init__.py"
+  if [ ! -e "$DST" ]; then ln -s "$PWD/$SRC" "$PWD/$DST" 2>/dev/null || cp -r "$SRC" "$DST"; fi
+  [ -f "$DST/__init__.py" ] || touch "$DST/__init__.py"
+  export PYTHONPATH="$PWD/$DST:$PYTHONPATH"
+fi
+
 [[ -d tests ]] || mkdir -p tests
 [[ -f tests/__init__.py ]] || touch tests/__init__.py
 if [[ -d tests/migrations ]]; then
   [[ -f tests/migrations/__init__.py ]] || touch tests/migrations/__init__.py
-  if [[ -d tests/migrations/custom_migration_operations ]]; then
-    [[ -f tests/migrations/custom_migration_operations/__init__.py ]] || touch tests/migrations/custom_migration_operations/__init__.py
-    cp -r tests/migrations/custom_migration_operations ./custom_migration_operations 2>/dev/null || true
-    [[ -f custom_migration_operations/__init__.py ]] || touch custom_migration_operations/__init__.py
-  fi
 fi
 
-# Minimal Django settings
 RUNNER_SETTINGS="_swe_settings"
 cat > "${RUNNER_SETTINGS}.py" <<'EOF'
 SECRET_KEY = "dummy"
@@ -129,7 +113,6 @@ ROOT_URLCONF = "tests.urls"
 EOF
 export DJANGO_SETTINGS_MODULE="${RUNNER_SETTINGS}"
 
-# Detect --ds support
 if pytest -q --help 2>&1 | grep -q -- '--ds'; then
   DS_OPTS=(--ds="${DJANGO_SETTINGS_MODULE}")
 else
@@ -137,11 +120,9 @@ else
   log "--ds not supported; relying on DJANGO_SETTINGS_MODULE env only"
 fi
 
-# Base pytest args
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-PY_ARGS_BASE=(-q -rA -p pytest_django --import-mode=importlib "${DS_OPTS[@]}")
+PY_ARGS_BASE=(-q -rA -p pytest_django "${DS_OPTS[@]}")
 
-# Fallback trivial test
 if [[ ${#GT_TESTS[@]} -eq 0 ]]; then
   log "No test specs provided; creating simple test"
   mkdir -p tests
@@ -150,34 +131,16 @@ if [[ ${#GT_TESTS[@]} -eq 0 ]]; then
   GT_TOTAL=1
 fi
 
-###############################################################################
-# Collect & run
-###############################################################################
-log "Collecting node ids..."
-COLLECT_FILE=/tmp/collected.txt
-COLLECT_ERR=/tmp/collect.err
-pytest --collect-only -p pytest_django --import-mode=importlib "${DS_OPTS[@]}" -q >"$COLLECT_FILE" 2>"$COLLECT_ERR" || true
-LINES=$(wc -l < "$COLLECT_FILE" || echo 0)
-log "Collected $LINES lines"
-head -20 "$COLLECT_FILE" || true
-if [[ -s "$COLLECT_ERR" ]]; then
-  log "Collect stderr (tail):"
-  tail -30 "$COLLECT_ERR" || true
-fi
-
-have_node(){ grep -Fx "$1" "$COLLECT_FILE" >/dev/null 2>&1; }
-
-nearest_node(){
+run_one(){
   local spec="$1"
+  pytest "${PY_ARGS_BASE[@]}" "$spec"
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then return 0; fi
   local file="${spec%%::*}"
-  local base="${spec%::*}"
-  if [[ "$base" != "$file" ]]; then
-    local cand
-    cand=$(grep -Fx "$base" "$COLLECT_FILE" 2>/dev/null | head -n1 || true)
-    [[ -n "$cand" ]] && echo "$cand" && return 0
-  fi
-  grep -Fx "$file" "$COLLECT_FILE" 2>/dev/null | head -n1 || true
-  return 0
+  local tail="${spec#${file}::}"
+  if [[ "$file" == "$tail" ]]; then return $rc; fi
+  pytest "${PY_ARGS_BASE[@]}" "$file" -k "$tail"
+  return $?
 }
 
 PASSED=0
@@ -186,31 +149,21 @@ comma=""
 
 for SPEC in "${GT_TESTS[@]}"; do
   SPEC="${SPEC%$'\r'}"
-  RUN_SPEC="$SPEC"
-  NOTE=""
-  REASON=""
-
-  if ! have_node "$SPEC"; then
-    RUN_SPEC="$(nearest_node "$SPEC")"
-    if [[ -z "$RUN_SPEC" ]]; then
-      REASON="not_collected"
-      DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":false,\"reason\":\"${REASON}\"}"
-      comma=","
-      continue
-    fi
-    NOTE="remapped_from:${SPEC}"
-  fi
-
-  log "RUN_SPEC for $SPEC => $RUN_SPEC ${NOTE:+($NOTE)}"
-  if pytest "${PY_ARGS_BASE[@]}" "$RUN_SPEC"; then
+  log "Running test spec: $SPEC"
+  if run_one "$SPEC"; then
     ((PASSED++))
-    DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":true${NOTE:+,\"note\":\"$NOTE\"}}"
+    DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":true}"
   else
-    DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":false${NOTE:+,\"note\":\"$NOTE\"}}"
+    rc=$?
+    if [[ $rc -eq 5 ]]; then
+      DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":false,\"reason\":\"not_collected\"}"
+    else
+      DETAILS="${DETAILS}${comma}\"${SPEC}\":{\"pass\":false}"
+    fi
   fi
   comma=","
 done
 
 RESULT="{\"passed\":${PASSED},\"total\":${GT_TOTAL},\"details\":{${DETAILS}}}"
-emit_result "$RESULT"
+emit_json "$RESULT"
 exit 0
